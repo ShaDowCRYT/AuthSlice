@@ -39,7 +39,9 @@ export async function signin(
 
   if (!user) {
     // Run a dummy compare to keep timing roughly consistent regardless of whether the user exists
-    await comparePassword(password, "$2b$12$abcdefghijklmnopqrstuv" + "0123456789abcdefghijkl");
+    const DUMMY_HASH =
+      "$2b$12$FDJ2LsvWgjpMxCxr8FkmT.4zPOUYpbODZ0JUWG3e3qWrxpNFFSode";
+    await comparePassword(password, DUMMY_HASH);
     return { error: invalidMsg };
   }
 
