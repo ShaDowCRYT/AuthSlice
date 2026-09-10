@@ -64,9 +64,15 @@ export async function requestPasswordReset(
     };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: parsed.data.email },
-  });
+  let user: { id: string } | null;
+  try {
+    user = await prisma.user.findUnique({
+      where: { email: parsed.data.email },
+    });
+  } catch {
+    // Never let a raw database exception reach the client
+    return { error: "Something went wrong. Please try again." };
+  }
 
   // Always return success even if the user doesn't exist — don't leak which emails have accounts
   if (!user) {
@@ -74,16 +80,20 @@ export async function requestPasswordReset(
   }
 
   // Invalidate any existing unused tokens
-  await prisma.passwordResetToken.deleteMany({
-    where: { userId: user.id, used: false },
-  });
-
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-  await prisma.passwordResetToken.create({
-    data: { userId: user.id, token, expiresAt },
-  });
+  try {
+    await prisma.passwordResetToken.deleteMany({
+      where: { userId: user.id, used: false },
+    });
+
+    await prisma.passwordResetToken.create({
+      data: { userId: user.id, token, expiresAt },
+    });
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
 
   await sendResetEmail(parsed.data.email, token);
 
@@ -116,13 +126,18 @@ export async function resetPassword(
   }
 
   // Single-use and time-limited: check expiry and used flag in the query itself
-  const resetToken = await prisma.passwordResetToken.findFirst({
-    where: {
-      token,
-      used: false,
-      expiresAt: { gt: new Date() },
-    },
-  });
+  let resetToken: { id: string; userId: string } | null;
+  try {
+    resetToken = await prisma.passwordResetToken.findFirst({
+      where: {
+        token,
+        used: false,
+        expiresAt: { gt: new Date() },
+      },
+    });
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
 
   if (!resetToken) {
     return { error: "Invalid or expired reset link." };
@@ -130,16 +145,20 @@ export async function resetPassword(
 
   const passwordHash = await hashPassword(password);
 
-  await prisma.$transaction([
-    prisma.passwordResetToken.update({
-      where: { id: resetToken.id },
-      data: { used: true },
-    }),
-    prisma.user.update({
-      where: { id: resetToken.userId },
-      data: { passwordHash },
-    }),
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { used: true },
+      }),
+      prisma.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash },
+      }),
+    ]);
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
 
   return { success: true };
 }

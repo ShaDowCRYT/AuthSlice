@@ -58,17 +58,22 @@ export async function signup(
   const code = generateCode();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (user) {
-    await prisma.verificationCode.deleteMany({
-      where: { userId: user.id },
-    });
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user) {
+      await prisma.verificationCode.deleteMany({
+        where: { userId: user.id },
+      });
 
-    await prisma.verificationCode.create({
-      data: { userId: user.id, code, expiresAt },
-    });
+      await prisma.verificationCode.create({
+        data: { userId: user.id, code, expiresAt },
+      });
 
-    await sendVerificationEmail(email, code);
+      await sendVerificationEmail(email, code);
+    }
+  } catch {
+    // Never let a raw database exception reach the client
+    return { error: "Something went wrong. Please try again." };
   }
 
   return { success: true };

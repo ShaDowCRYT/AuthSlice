@@ -59,3 +59,9 @@ This file is maintained continuously as issues arise during development — not 
 - **Investigated**: Generated a real 60-char bcrypt hash locally with `node -e "bcrypt.hash(...)"`.
 - **Cause**: Hand-typed placeholder did not match bcrypt's fixed output length.
 - **Fix**: Replaced the dummy string with a valid precomputed hash: `$2b$12$FDJ2LsvWgjpMxCxr8FkmT.4zPOUYpbODZ0JUWG3e3qWrxpNFFSode`.
+
+### 10. Raw Prisma Error Leaks to Client During Runtime
+- **Symptom**: Submitting `/signin` with the placeholder DB credentials produced a `500` and the raw `PrismaClientInitializationError` stack trace ("Authentication failed against database server...") appeared in the browser console — not a clean, expected error response.
+- **Investigated**: Traced through `lib/auth/signin.ts`. The `prisma.user.findUnique` call was not wrapped in a try/catch, so the DB failure propagated straight back to the client as a server action rejection.
+- **Cause**: Only `signup.ts`'s user creation had error handling (for the P2002 idempotency case); the other DB operations in `signin.ts`, `verify.ts`, and `reset.ts` were unwrapped.
+- **Fix**: Wrapped every DB-touching operation in all four auth server actions (`signup`, `signin`, `verifyEmail`, `resendCode`, `requestPasswordReset`, `resetPassword`) in try/catch that returns the generic message "Something went wrong. Please try again." — a raw database exception can never reach the client. (Note: the root trigger was placeholder credentials in `.env`; that still requires the human to supply a real `DATABASE_URL`.)

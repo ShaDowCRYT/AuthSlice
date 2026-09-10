@@ -32,7 +32,13 @@ export async function signin(
     };
   }
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  let user: { id: string; email: string; passwordHash: string; emailVerified: boolean } | null;
+  try {
+    user = await prisma.user.findUnique({ where: { email } });
+  } catch {
+    // Never let a raw database exception reach the client
+    return { error: "Something went wrong. Please try again." };
+  }
 
   // Same error message for "email not found" and "wrong password" — never leak which emails have accounts
   const invalidMsg = "Invalid email or password.";
@@ -54,6 +60,10 @@ export async function signin(
     return { error: "Please verify your email before signing in." };
   }
 
-  await createSession(user.id);
+  try {
+    await createSession(user.id);
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
   redirect("/dashboard");
 }

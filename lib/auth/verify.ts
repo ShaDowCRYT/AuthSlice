@@ -66,36 +66,42 @@ export async function verifyEmail(
     };
   }
 
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    return { error: "Invalid code or email." };
+  let user: { id: string; email: string; emailVerified: boolean } | null;
+  try {
+    user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return { error: "Invalid code or email." };
+    }
+
+    // Find code in DB, checking expiry in the query itself (security rule)
+    const verificationCode = await prisma.verificationCode.findFirst({
+      where: {
+        userId: user.id,
+        code,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!verificationCode) {
+      return { error: "Invalid or expired code." };
+    }
+
+    // Mark email as verified and delete the used code
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerified: true },
+      }),
+      prisma.verificationCode.delete({
+        where: { id: verificationCode.id },
+      }),
+    ]);
+
+    return { success: true };
+  } catch {
+    // Never let a raw database exception reach the client
+    return { error: "Something went wrong. Please try again." };
   }
-
-  // Find code in DB, checking expiry in the query itself (security rule)
-  const verificationCode = await prisma.verificationCode.findFirst({
-    where: {
-      userId: user.id,
-      code,
-      expiresAt: { gt: new Date() },
-    },
-  });
-
-  if (!verificationCode) {
-    return { error: "Invalid or expired code." };
-  }
-
-  // Mark email as verified and delete the used code
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: user.id },
-      data: { emailVerified: true },
-    }),
-    prisma.verificationCode.delete({
-      where: { id: verificationCode.id },
-    }),
-  ]);
-
-  return { success: true };
 }
 
 export async function resendCode(
@@ -117,7 +123,14 @@ export async function resendCode(
     };
   }
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  let user: { id: string; emailVerified: boolean } | null;
+  try {
+    user = await prisma.user.findUnique({ where: { email } });
+  } catch {
+    // Never let a raw database exception reach the client
+    return { error: "Something went wrong. Please try again." };
+  }
+
   if (!user) {
     // Don't leak account existence
     return { success: true };
@@ -128,16 +141,20 @@ export async function resendCode(
   }
 
   // Delete old codes and create a new one
-  await prisma.verificationCode.deleteMany({
-    where: { userId: user.id },
-  });
-
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-  await prisma.verificationCode.create({
-    data: { userId: user.id, code, expiresAt },
-  });
+  try {
+    await prisma.verificationCode.deleteMany({
+      where: { userId: user.id },
+    });
+
+    await prisma.verificationCode.create({
+      data: { userId: user.id, code, expiresAt },
+    });
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
 
   await sendVerificationEmail(email, code);
 
