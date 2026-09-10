@@ -65,3 +65,15 @@ This file is maintained continuously as issues arise during development — not 
 - **Investigated**: Traced through `lib/auth/signin.ts`. The `prisma.user.findUnique` call was not wrapped in a try/catch, so the DB failure propagated straight back to the client as a server action rejection.
 - **Cause**: Only `signup.ts`'s user creation had error handling (for the P2002 idempotency case); the other DB operations in `signin.ts`, `verify.ts`, and `reset.ts` were unwrapped.
 - **Fix**: Wrapped every DB-touching operation in all four auth server actions (`signup`, `signin`, `verifyEmail`, `resendCode`, `requestPasswordReset`, `resetPassword`) in try/catch that returns the generic message "Something went wrong. Please try again." — a raw database exception can never reach the client. (Note: the root trigger was placeholder credentials in `.env`; that still requires the human to supply a real `DATABASE_URL`.)
+
+### 11. Prisma Migration Timed Out Acquiring Advisory Lock
+- **Symptom**: First `npx prisma migrate dev` after fixing credentials failed with `P1002: The database server was reached but timed out... Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(...))`.
+- **Investigated**: Postgres runs in a Docker container (`authslice-postgres`, postgres:16-alpine) on port 5433. Credentials validated fine; the lock wait itself timed out.
+- **Cause**: Transient — the advisory lock wait hit its 10s timeout (Docker + freshly started container).
+- **Fix**: Simply re-ran `npx prisma migrate dev`; the migration applied on the second attempt (`20260910144753_init`).
+
+### 12. Windows EPERM Renaming Prisma Query Engine DLL
+- **Symptom**: `prisma generate` failed after a successful migration: `EPERM: operation not permitted, rename '...query_engine-windows.dll.node.tmp' -> '...query_engine-windows.dll.node'`.
+- **Investigated**: Enumerated node processes via `Get-CimInstance Win32_Process` — the running `next dev` server (`npm run dev`, `next dev`, start-server, and two turbopack workers) held the DLL open in memory.
+- **Cause**: Windows cannot rename an open file; the running dev server blocked the client binary swap.
+- **Fix**: Stopped the `next dev` server, re-ran `npx prisma generate` — succeeded. (Left unrelated `chrome-devtools-mcp` processes untouched.)
