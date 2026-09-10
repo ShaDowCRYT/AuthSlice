@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { randomBytes } from "crypto";
+import { redirect } from "next/navigation";
 
 const SESSION_COOKIE = "session_id";
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days in seconds
@@ -54,4 +55,11 @@ export async function deleteSession(): Promise<void> {
 
   await prisma.session.deleteMany({ where: { id: sessionId } });
   cookieStore.delete(SESSION_COOKIE);
+}
+
+export async function signout(): Promise<void> {
+  "use server";
+
+  await deleteSession();
+  redirect("/signin");
 }
