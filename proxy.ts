@@ -6,7 +6,7 @@ import type { NextRequest } from "next/server";
 // Full session validation happens server-side in the page component.
 // An expired or missing session cookie redirects to /signin.
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const sessionCookie = request.cookies.get("session_id");
 
   if (!sessionCookie?.value) {
