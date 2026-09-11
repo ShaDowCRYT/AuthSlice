@@ -1,0 +1,37 @@
+# Evidence 3: Verification code in DB — fresh (before expiry)
+# Date captured: 2026-09-11
+
+# Query:
+SELECT * FROM verification_codes WHERE email = 'evidence-capture@test.com' ORDER BY "createdAt" DESC LIMIT 1;
+
+            id             |          userId           |  code  |        expiresAt        |        createdAt
+---------------------------+---------------------------+--------+-------------------------+-------------------------
+ cmtwx7orz0002qen0pgedly4f | cmtwx7oqa0000qen058ep648t | 278237 | 2026-09-11 12:26:41.487 | 2026-09-11 12:16:41.519
+
+# Note: expiresAt (12:26:41) is 10 minutes after createdAt (12:16:41).
+# Verification codes expire 10 minutes after creation; the expiry check happens
+# inside the Prisma query (`expiresAt: { gt: new Date() }`), never only in UI.
+
+# ---
+
+# Same record AFTER expiry has passed (expiresAt backdated with SQL to simulate the
+# passage of time; the row is otherwise untouched — same id, code, and createdAt):
+UPDATE verification_codes SET "expiresAt" = now() - interval '1 minute' WHERE id = 'cmtwx7orz0002qen0pgedly4f';
+UPDATE 1
+
+SELECT * FROM verification_codes WHERE id = 'cmtwx7orz0002qen0pgedly4f';
+
+            id             |  code  |        expiresAt        |        createdAt
+---------------------------+--------+-------------------------+-------------------------
+ cmtwx7orz0002qen0pgedly4f | 278237 | 2026-09-11 12:16:32.917 | 2026-09-11 12:16:41.519
+
+# ---
+
+# Verification attempt with the expired code — the server rejects it:
+curl.exe -X POST "http://localhost:3000/api/auth/verify" -F "email=evidence-capture@test.com" -F "code=278237"
+
+{"error":"Invalid or expired code."}
+
+# Same code before expiry would return {"success":true}; after expiry the identical
+# DB row + submitted code are refused. Expiry is enforced by the database query,
+# not by a frontend countdown.

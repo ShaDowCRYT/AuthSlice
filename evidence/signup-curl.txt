@@ -1,0 +1,8 @@
+﻿# Evidence 1: Direct signup curl (bypassing the browser)
+# Date captured: 2026-09-11
+
+# Exact command (multipart/form-data, matching the route's formData() parsing):
+curl.exe -X POST "http://localhost:3000/api/auth/signup" -F "fullName=Evidence User" -F "email=evidence-capture@test.com" -F "password=SecurePass123!"
+
+# HTTP response body:
+{"success":true}

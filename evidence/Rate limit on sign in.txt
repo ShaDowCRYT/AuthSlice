@@ -1,0 +1,28 @@
+﻿# Evidence: Full happy-path E2E — signup -> verify -> dashboard -> greeting
+# Date captured: 2026-09-11
+# Acceptance criteria: "A new user can create an account, verify their email, and reach the dashboard"
+
+# Note on X-Forwarded-For: requests came from localhost, so getClientIp() would
+# otherwise share one "unknown" bucket; the header is used here to give this test
+# its own per-IP bucket (retry-after on a different test otherwise blocked verify).
+
+1) SIGNUP — direct curl, bypassing the browser:
+   curl.exe -H "X-Forwarded-For: 203.0.113.10" -X POST "http://localhost:3000/api/auth/signup" -F "fullName=E2E User" -F "email=e2e-final@test.com" -F "password=SecurePass123!"
+   Response: {"success":true}
+
+2) THE 6-DIGIT VERIFICATION CODE READ DIRECTLY FROM THE DB (never from the UI):
+   581651
+
+3) VERIFY — with that code; response sets a database-backed session cookie:
+   HTTP/1.1 200 OK
+   set-cookie: session_id=4be8f6f459812552a93480a9740a4a4f449c22500ccdd8c9606b9f0065d4885e; Path=/; Expires=Fri, 18 Sep 2026 12:21:20 GMT; Max-Age=604800; HttpOnly; SameSite=lax
+   (HttpOnly + SameSite=lax + 7-day Max-Age; session row is revocable in the sessions table.)
+
+4) GET /dashboard WITH THAT SESSION COOKIE -> HTTP 200
+   Dashboard HTML contains "Welcome, E2E User" greeting: true.
+
+5) AFTER A SUCCESSFUL VERIFY THE USED CODE IS DELETED FROM verification_codes
+   (single-use, enforced by the DB transaction): 0 matching rows remain.
+
+# The just-verified user lands on the dashboard immediately (signed in on verify),
+# per the rejected-alternative note in problems.md #17.

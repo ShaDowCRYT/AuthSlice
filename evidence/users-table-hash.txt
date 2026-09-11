@@ -1,0 +1,6 @@
+﻿            id             |           email            |                         passwordHash                         | emailVerified |        createdAt        |   fullName    
+---------------------------+----------------------------+--------------------------------------------------------------+---------------+-------------------------+---------------
+ cmtwx7oqa0000qen058ep648t | evidence-capture@test.com  | $2b$12$WRvy8U8zjXwbTckM0O/nU.9xT5EgCOcAOqR4gGgbkfwFbuxFkQ582 | f             | 2026-09-11 12:16:41.455 | Evidence User
+ cmtwx9pic0003qen0b61f7uss | evidence-capture2@test.com | $2b$12$DQBAjPVp8a8btLzaxFed9OpeJrS/t5deoeGZgXpt3Q7MyoZKYt6LS | f             | 2026-09-11 12:18:15.779 | Evidence User
+(2 rows)
+

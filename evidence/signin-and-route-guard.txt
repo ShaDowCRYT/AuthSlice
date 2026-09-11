@@ -1,0 +1,26 @@
+# Evidence: Returning user signs in, reaches dashboard
+# Date captured: 2026-09-11
+# Acceptance criteria: "A returning user can sign in"
+
+1) SIGN-IN — with valid credentials:
+   curl.exe -H "X-Forwarded-For: 203.0.113.20" -X POST "http://localhost:3000/api/auth/signin" -F "email=e2e-final@test.com" -F "password=SecurePass123!"
+
+   HTTP/1.1 200 OK
+   set-cookie: session_id=<...>; Path=/; Expires=Fri, 18 Sep 2026 12:21:47 GMT; Max-Age=604800; HttpOnly; SameSite=lax
+
+   (HttpOnly cookie set; 7-day expiry; session row in sessions table is revocable on signout.)
+
+2) GET /dashboard with that session cookie -> HTTP 200
+   Dashboard HTML contains "Welcome, E2E User" greeting: true.
+
+---
+
+# Acceptance criteria: "A signed-out user who types the dashboard URL directly is sent to sign in"
+
+3) GET /dashboard WITHOUT a session cookie:
+   curl.exe http://localhost:3000/dashboard
+
+   HTTP/1.1 307 Temporary Redirect
+   Location: /signin
+
+   (Unauthenticated request redirected to sign-in page.)

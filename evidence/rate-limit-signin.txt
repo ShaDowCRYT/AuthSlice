@@ -1,0 +1,22 @@
+﻿# Evidence: Rate limit triggering (429 + Retry-After)
+# Date captured: 2026-09-11
+# Route: POST /api/auth/signin — limit 5 attempts per IP per 15 minutes.
+
+# Exact command (repeated 5 times, then once more for the 6th):
+# curl.exe -X POST "http://localhost:3000/api/auth/signin" -F "email=rl-evidence@test.com" -F "password=WrongPass1"
+
+# Attempts 1-5 (within the limit) — 400, generic error, no account enumeration:
+ {"error":"Invalid email or password."}  HTTP_STATUS:400
+ {"error":"Invalid email or password."}  HTTP_STATUS:400
+ {"error":"Invalid email or password."}  HTTP_STATUS:400
+ {"error":"Invalid email or password."}  HTTP_STATUS:400
+ {"error":"Invalid email or password."}  HTTP_STATUS:400
+
+# Attempt 6 (limit exceeded) — 429 WITH a Retry-After header:
+ {"error":"Too many attempts. Try again in 899 seconds."}  HTTP_STATUS:429
+
+# Full response headers from the 6th request, showing the retry indication:
+# HTTP/1.1 429 Too Many Requests
+# content-type: application/json
+# retry-after: 899
+# Date: Fri, 11 Sep 2026 12:17:57 GMT
