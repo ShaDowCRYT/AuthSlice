@@ -1,70 +1,39 @@
-"use server";
+// Email-verification service. Plain server-side module (not a server action) —
+// rate limiting lives in app/api/auth/verify and app/api/auth/resend-code.
 
 import { prisma } from "@/lib/prisma";
 import { verifySchema } from "@/lib/schemas/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
-import nodemailer from "nodemailer";
+import { createSession } from "@/lib/auth/session";
+import { sendEmail } from "@/lib/email";
 
-let transporter: nodemailer.Transporter | null = null;
-
-async function getTransporter(): Promise<nodemailer.Transporter> {
-  if (transporter) return transporter;
-  const testAccount = await nodemailer.createTestAccount();
-  transporter = nodemailer.createTransport({
-    host: "smtp.ethereal.email",
-    port: 587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-  });
-  return transporter;
-}
+export type VerifyResult = { success: true } | { error: string };
 
 export async function sendVerificationEmail(
   email: string,
   code: string
 ): Promise<void> {
-  const transport = await getTransporter();
-  const info = await transport.sendMail({
-    from: "AuthSlice <noreply@authslice.dev>",
-    to: email,
-    subject: "Your verification code",
-    text: `Your verification code is: ${code}. It expires in 10 minutes.`,
-    html: `<p>Your verification code is: <strong>${code}</strong>. It expires in 10 minutes.</p>`,
-  });
+  const previewUrl = await sendEmail(
+    email,
+    "Your verification code",
+    `Your verification code is: ${code}. It expires in 10 minutes.`,
+    `<p>Your verification code is: <strong>${code}</strong>. It expires in 10 minutes.</p>`
+  );
 
-  const previewUrl = nodemailer.getTestMessageUrl(info);
   if (previewUrl) {
     console.log("Verification email preview:", previewUrl);
   }
 }
 
-export async function verifyEmail(
-  _prevState: { error: string } | null,
-  formData: FormData
-): Promise<{ error: string } | { success: true } | null> {
-  const raw = {
-    email: formData.get("email") as string,
-    code: formData.get("code") as string,
-  };
-
-  const parsed = verifySchema.safeParse(raw);
+export async function verifyEmail(data: {
+  email: string;
+  code: string;
+}): Promise<VerifyResult> {
+  const parsed = verifySchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
 
   const { email, code } = parsed.data;
-
-  // Rate limit: 3 verifications per IP per 15 minutes
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "verify", 3, 15 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
-  }
 
   let user: { id: string; email: string; emailVerified: boolean } | null;
   try {
@@ -97,6 +66,9 @@ export async function verifyEmail(
       }),
     ]);
 
+    // A just-verified user is signed into the dashboard immediately
+    await createSession(user.id);
+
     return { success: true };
   } catch {
     // Never let a raw database exception reach the client
@@ -104,28 +76,19 @@ export async function verifyEmail(
   }
 }
 
-export async function resendCode(
-  _prevState: { error: string } | null,
-  formData: FormData
-): Promise<{ error: string } | { success: true } | null> {
-  const email = formData.get("email") as string;
-
-  if (!email) {
-    return { error: "Email is required." };
-  }
-
-  // Rate limit: 3 resends per IP per 5 minutes (tightest limit — direct email cost)
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "resend-code", 3, 5 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
+export async function resendVerificationCode(data: {
+  email: string;
+}): Promise<VerifyResult> {
+  const parsed = verifySchema.pick({ email: true }).safeParse(data);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0].message };
   }
 
   let user: { id: string; emailVerified: boolean } | null;
   try {
-    user = await prisma.user.findUnique({ where: { email } });
+    user = await prisma.user.findUnique({
+      where: { email: parsed.data.email },
+    });
   } catch {
     // Never let a raw database exception reach the client
     return { error: "Something went wrong. Please try again." };
@@ -156,7 +119,12 @@ export async function resendCode(
     return { error: "Something went wrong. Please try again." };
   }
 
-  await sendVerificationEmail(email, code);
+  try {
+    await sendVerificationEmail(parsed.data.email, code);
+  } catch {
+    // Never let an email/network exception reach the client; SMTP can be down.
+    return { error: "Email service unavailable. Please try again later." };
+  }
 
   return { success: true };
 }

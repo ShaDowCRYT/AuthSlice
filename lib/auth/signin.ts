@@ -1,38 +1,30 @@
-"use server";
+// Sign-in service. Plain server-side module (not a server action) — rate
+// limiting lives in app/api/auth/signin/route.ts.
 
 import { prisma } from "@/lib/prisma";
 import { comparePassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { signinSchema } from "@/lib/schemas/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
-import { redirect } from "next/navigation";
 
-export async function signin(
-  _prevState: { error: string } | null,
-  formData: FormData
-): Promise<{ error: string } | null> {
-  const raw = {
-    email: formData.get("email") as string,
-    password: formData.get("password") as string,
-  };
+export type SigninResult = { success: true } | { error: string };
 
-  const parsed = signinSchema.safeParse(raw);
+export async function signIn(data: {
+  email: string;
+  password: string;
+}): Promise<SigninResult> {
+  const parsed = signinSchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
 
   const { email, password } = parsed.data;
 
-  // Rate limit: 5 signins per IP per 15 minutes
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "signin", 5, 15 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
-  }
-
-  let user: { id: string; email: string; passwordHash: string; emailVerified: boolean } | null;
+  let user: {
+    id: string;
+    email: string;
+    passwordHash: string;
+    emailVerified: boolean;
+  } | null;
   try {
     user = await prisma.user.findUnique({ where: { email } });
   } catch {
@@ -65,5 +57,6 @@ export async function signin(
   } catch {
     return { error: "Something went wrong. Please try again." };
   }
-  redirect("/dashboard");
+
+  return { success: true };
 }

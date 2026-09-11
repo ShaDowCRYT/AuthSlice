@@ -1,45 +1,34 @@
-"use server";
+// Signup service. Plain server-side module (not a server action) — the
+// endpoint's rate limiting and parsing live in app/api/auth/signup/route.ts.
 
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { signupSchema } from "@/lib/schemas/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
 import { sendVerificationEmail } from "@/lib/auth/verify";
+
+export type SignupResult = { success: true } | { error: string };
 
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-export async function signup(
-  _prevState: { error: string } | { success: true } | null,
-  formData: FormData
-): Promise<{ error: string } | { success: true } | null> {
-  const raw = {
-    email: formData.get("email") as string,
-    password: formData.get("password") as string,
-  };
-
-  const parsed = signupSchema.safeParse(raw);
+export async function createAccount(data: {
+  fullName: string;
+  email: string;
+  password: string;
+}): Promise<SignupResult> {
+  const parsed = signupSchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
 
-  const { email, password } = parsed.data;
-
-  // Rate limit: 5 signups per IP per 15 minutes
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "signup", 5, 15 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
-  }
+  const { fullName, email, password } = parsed.data;
 
   const passwordHash = await hashPassword(password);
 
   try {
     await prisma.user.create({
-      data: { email, passwordHash },
+      data: { fullName, email, passwordHash },
     });
   } catch (e: unknown) {
     if (
@@ -54,7 +43,7 @@ export async function signup(
     }
   }
 
-  // Generate and send verification code
+  // Generate and store verification code
   const code = generateCode();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -68,12 +57,19 @@ export async function signup(
       await prisma.verificationCode.create({
         data: { userId: user.id, code, expiresAt },
       });
-
-      await sendVerificationEmail(email, code);
     }
   } catch {
     // Never let a raw database exception reach the client
     return { error: "Something went wrong. Please try again." };
+  }
+
+  // Email delivery is best-effort — the account and code are persisted,
+  // so the user can always retry via the resend-code endpoint.  If the
+  // SMTP server is unreachable the request should not become a 400.
+  try {
+    await sendVerificationEmail(email, code);
+  } catch {
+    console.error(`Signup: verification email to ${email} could not be sent`);
   }
 
   return { success: true };

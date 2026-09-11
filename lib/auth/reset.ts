@@ -1,67 +1,64 @@
-"use server";
+// Password-reset service. Plain server-side module (not a server action) —
+// rate limiting lives in app/api/auth/forgot-password and app/api/auth/reset-password.
 
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth/password";
-import { forgotPasswordSchema, resetPasswordSchema } from "@/lib/schemas/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
+import {
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  verifySchema,
+} from "@/lib/schemas/auth";
+import { sendEmail } from "@/lib/email";
 import { randomBytes } from "crypto";
-import nodemailer from "nodemailer";
 
-let transporter: nodemailer.Transporter | null = null;
+export type ResetResult = { success: true } | { error: string };
 
-async function getTransporter(): Promise<nodemailer.Transporter> {
-  if (transporter) return transporter;
-  const testAccount = await nodemailer.createTestAccount();
-  transporter = nodemailer.createTransport({
-    host: "smtp.ethereal.email",
-    port: 587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-  });
-  return transporter;
+// Reset codes are derived from crypto.randomBytes(32) via rejection sampling,
+// so the 6-digit distribution is uniform (no modulo bias). Chosen over
+// Math.random() — it is not cryptographically secure, and this code stands in
+// for what used to be a 32-byte one-time token. Codes are stored in the
+// existing password_reset_tokens.token column (String @unique), so no schema
+// migration is required.
+function generateResetCode(): string {
+  const RANGE = 900000; // [100000, 1000000)
+  const MIN = 100000;
+  const LIMIT = Math.floor(0x100000000 / RANGE) * RANGE;
+
+  while (true) {
+    const buffer = randomBytes(32);
+    for (let offset = 0; offset < buffer.length; offset += 4) {
+      const value = buffer.readUInt32BE(offset);
+      if (value < LIMIT) {
+        return String((value % RANGE) + MIN);
+      }
+    }
+    // Exhausting 32 random bytes of rejection sampling is effectively
+    // impossible; loop to draw fresh entropy rather than bias the range.
+  }
 }
 
 export async function sendResetEmail(
   email: string,
-  token: string
+  code: string
 ): Promise<void> {
-  const transport = await getTransporter();
-  const resetUrl = `${process.env.APP_URL ?? "http://localhost:3000"}/reset-password?token=${token}`;
-  const info = await transport.sendMail({
-    from: "AuthSlice <noreply@authslice.dev>",
-    to: email,
-    subject: "Reset your password",
-    text: `Click this link to reset your password: ${resetUrl}. This link expires in 1 hour.`,
-    html: `<p>Click <a href="${resetUrl}">this link</a> to reset your password. This link expires in 1 hour.</p>`,
-  });
+  const previewUrl = await sendEmail(
+    email,
+    "Reset your password",
+    `Your password reset code is: ${code}. It expires in 15 minutes.`,
+    `<p>Your password reset code is: <strong>${code}</strong>. It expires in 15 minutes.</p>`
+  );
 
-  const previewUrl = nodemailer.getTestMessageUrl(info);
   if (previewUrl) {
     console.log("Reset email preview:", previewUrl);
   }
 }
 
-export async function requestPasswordReset(
-  _prevState: { error: string } | { success: true } | null,
-  formData: FormData
-): Promise<{ error: string } | { success: true } | null> {
-  const email = formData.get("email") as string;
-
-  const parsed = forgotPasswordSchema.safeParse({ email });
+export async function requestPasswordReset(data: {
+  email: string;
+}): Promise<ResetResult> {
+  const parsed = forgotPasswordSchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
-  }
-
-  // Rate limit: 2 requests per IP per 15 minutes (email has a direct cost)
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "forgot-password", 2, 15 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
   }
 
   let user: { id: string } | null;
@@ -79,9 +76,9 @@ export async function requestPasswordReset(
     return { success: true };
   }
 
-  // Invalidate any existing unused tokens
-  const token = randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  // Invalidate any existing unused codes
+  const code = generateResetCode();
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
   try {
     await prisma.passwordResetToken.deleteMany({
@@ -89,48 +86,87 @@ export async function requestPasswordReset(
     });
 
     await prisma.passwordResetToken.create({
-      data: { userId: user.id, token, expiresAt },
+      data: { userId: user.id, token: code, expiresAt },
     });
   } catch {
     return { error: "Something went wrong. Please try again." };
   }
 
-  await sendResetEmail(parsed.data.email, token);
+  try {
+    await sendResetEmail(parsed.data.email, code);
+  } catch {
+    // Never let an email/network exception reach the client; SMTP can be down.
+    return { error: "Email service unavailable. Please try again later." };
+  }
 
   return { success: true };
 }
 
-export async function resetPassword(
-  _prevState: { error: string } | { success: true } | null,
-  formData: FormData
-): Promise<{ error: string } | { success: true } | null> {
-  const raw = {
-    token: formData.get("token") as string,
-    password: formData.get("password") as string,
-  };
-
-  const parsed = resetPasswordSchema.safeParse(raw);
+export async function verifyResetCode(data: {
+  email: string;
+  code: string;
+}): Promise<ResetResult> {
+  const parsed = verifySchema.safeParse(data);
   if (!parsed.success) {
     return { error: parsed.error.issues[0].message };
   }
 
-  const { token, password } = parsed.data;
+  const { email, code } = parsed.data;
 
-  // Rate limit: 5 attempts per IP per 15 minutes
-  const ip = "127.0.0.1";
-  const rl = checkRateLimit(ip, "reset-password", 5, 15 * 60 * 1000);
-  if (!rl.allowed) {
-    return {
-      error: `Too many attempts. Try again in ${rl.retryAfterSeconds} seconds.`,
-    };
+  let resetRecord: { id: string; userId: string } | null;
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return { error: "Invalid or expired reset code." };
+    }
+
+    // Single-use and time-limited: check expiry and used flag in the query itself.
+    // Invalid and expired codes fail identically — no leaking which reason caused it.
+    resetRecord = await prisma.passwordResetToken.findFirst({
+      where: {
+        userId: user.id,
+        token: code,
+        used: false,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true, userId: true },
+    });
+  } catch {
+    return { error: "Something went wrong. Please try again." };
   }
 
-  // Single-use and time-limited: check expiry and used flag in the query itself
-  let resetToken: { id: string; userId: string } | null;
+  if (!resetRecord) {
+    return { error: "Invalid or expired reset code." };
+  }
+
+  return { success: true };
+}
+
+export async function resetPassword(data: {
+  email: string;
+  code: string;
+  password: string;
+}): Promise<ResetResult> {
+  const parsed = resetPasswordSchema.safeParse(data);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0].message };
+  }
+
+  const { email, code, password } = parsed.data;
+
+  // Single-use and time-limited: check expiry and used flag in the query itself.
+  // Invalid and expired codes fail identically — no leaking which reason caused it.
+  let resetRecord: { id: string; userId: string } | null;
   try {
-    resetToken = await prisma.passwordResetToken.findFirst({
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return { error: "Invalid or expired reset code." };
+    }
+
+    resetRecord = await prisma.passwordResetToken.findFirst({
       where: {
-        token,
+        userId: user.id,
+        token: code,
         used: false,
         expiresAt: { gt: new Date() },
       },
@@ -139,8 +175,8 @@ export async function resetPassword(
     return { error: "Something went wrong. Please try again." };
   }
 
-  if (!resetToken) {
-    return { error: "Invalid or expired reset link." };
+  if (!resetRecord) {
+    return { error: "Invalid or expired reset code." };
   }
 
   const passwordHash = await hashPassword(password);
@@ -148,11 +184,11 @@ export async function resetPassword(
   try {
     await prisma.$transaction([
       prisma.passwordResetToken.update({
-        where: { id: resetToken.id },
+        where: { id: resetRecord.id },
         data: { used: true },
       }),
       prisma.user.update({
-        where: { id: resetToken.userId },
+        where: { id: resetRecord.userId },
         data: { passwordHash },
       }),
     ]);
